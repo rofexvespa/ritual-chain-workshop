@@ -1,11 +1,11 @@
 import { expect } from "chai";
-import { ethers, network } from "hardhat";
+import hre from "hardhat";
 import { describe, it } from "node:test";
 
 describe("AIJudge Commit-Reveal Flow", function () {
     async function deployFixture() {
-        const [owner, addr1, addr2] = await ethers.getSigners();
-        const AIJudgeFactory = await ethers.getContractFactory("AIJudge");
+        const [owner, addr1, addr2] = await hre.ethers.getSigners();
+        const AIJudgeFactory = await hre.ethers.getContractFactory("AIJudge");
         const aiJudge = await AIJudgeFactory.deploy();
         return { aiJudge, owner, addr1, addr2 };
     }
@@ -15,11 +15,11 @@ describe("AIJudge Commit-Reveal Flow", function () {
         
         const title = "Best Code";
         const rubric = "Clean and fast";
-        const latestBlock = await ethers.provider.getBlock("latest");
+        const latestBlock = await hre.ethers.provider.getBlock("latest");
         const currentTimestamp = latestBlock ? latestBlock.timestamp : Math.floor(Date.now() / 1000);
         const deadline = currentTimestamp + 3600; // 1 hour
         const revealDeadline = deadline + 3600; // 2 hours
-        const reward = ethers.parseEther("1");
+        const reward = hre.ethers.parseEther("1");
 
         // 1. Create Bounty
         await aiJudge.createBounty(title, rubric, deadline, revealDeadline, { value: reward });
@@ -27,20 +27,20 @@ describe("AIJudge Commit-Reveal Flow", function () {
 
         // 2. Commit Phase
         const answer = "My secret answer";
-        const salt = ethers.encodeBytes32String("my-secret-salt");
+        const salt = hre.ethers.encodeBytes32String("my-secret-salt");
         
         // keccak256(abi.encodePacked(answer, salt, msg.sender, bountyId))
-        const encodedData = ethers.solidityPacked(
+        const encodedData = hre.ethers.solidityPacked(
             ["string", "bytes32", "address", "uint256"],
             [answer, salt, addr1.address, bountyId]
         );
-        const commitment = ethers.keccak256(encodedData);
+        const commitment = hre.ethers.keccak256(encodedData);
 
         await aiJudge.connect(addr1).submitCommitment(bountyId, commitment);
 
         // 3. Move time to Reveal Phase
-        await network.provider.send("evm_increaseTime", [3660]);
-        await network.provider.send("evm_mine");
+        await hre.network.provider.send("evm_increaseTime", [3660]);
+        await hre.network.provider.send("evm_mine");
 
         // 4. Reveal Phase
         await aiJudge.connect(addr1).revealAnswer(bountyId, answer, salt);
