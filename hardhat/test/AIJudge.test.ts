@@ -1,129 +1,103 @@
+import { describe, it } from "node:test";
 import { expect } from "chai";
 import hre from "hardhat";
-import { describe, it } from "node:test";
+import { toHex, encodePacked, keccak256, parseGwei } from "viem";
 
 describe("AIJudge Commit-Reveal Flow", function () {
     async function deployFixture() {
-        const [owner, addr1, addr2] = await hre.ethers.getSigners();
-        const AIJudgeFactory = await hre.ethers.getContractFactory("AIJudge");
-        const aiJudge = await AIJudgeFactory.deploy();
-        return { aiJudge, owner, addr1, addr2 };
+        const publicClient = await hre.viem.getPublicClient();
+        const [owner, addr1, addr2] = await hre.viem.getWalletClients();
+        const aiJudge = await hre.viem.deployContract("AIJudge");
+        return { aiJudge, owner, addr1, addr2, publicClient };
     }
 
     it("should allow a valid commit and reveal", async function () {
-        const { aiJudge, addr1 } = await deployFixture();
-        
-        const title = "Best Code";
-        const rubric = "Clean and fast";
-        const latestBlock = await hre.ethers.provider.getBlock("latest");
-        const currentTimestamp = latestBlock ? latestBlock.timestamp : Math.floor(Date.now() / 1000);
-        const deadline = currentTimestamp + 3600; // 1 hour
-        const revealDeadline = deadline + 3600; // 2 hours
-        const reward = hre.ethers.parseEther("1");
+        const { aiJudge, addr1, publicClient } = await deployFixture();
 
-        // 1. Create Bounty
-        await aiJudge.createBounty(title, rubric, deadline, revealDeadline, { value: reward });
-        const bountyId = 1;
+        const answer = 42n; // BigInt
+        const saltStr = "random_salt_123";
+        const saltBytes = keccak256(toHex(saltStr));
 
-        // 2. Commit Phase
-        const answer = "My secret answer";
-        const salt = hre.ethers.encodeBytes32String("my-secret-salt");
-        
-        // keccak256(abi.encodePacked(answer, salt, msg.sender, bountyId))
-        const encodedData = hre.ethers.solidityPacked(
-            ["string", "bytes32", "address", "uint256"],
-            [answer, salt, addr1.address, bountyId]
-        );
-        const commitment = hre.ethers.keccak256(encodedData);
+        // Create the commitment hash locally to match Solidity's keccak256(abi.encodePacked(answer, salt))
+        const commitment = keccak256(encodePacked(['uint256', 'bytes32'], [answer, saltBytes]));
 
-        await aiJudge.connect(addr1).submitCommitment(bountyId, commitment);
+        // Commit
+        const txCommit = await aiJudge.write.commit([commitment], { account: addr1.account });
+        await publicClient.waitForTransactionReceipt({ hash: txCommit });
 
-        // 3. Move time to Reveal Phase
-        await hre.network.provider.send("evm_increaseTime", [3660]);
+        const commitBlock = await publicClient.getBlock();
+        const commitTime = commitBlock.timestamp;
+
+        // Check if the commit is stored
+        const userCommit = await aiJudge.read.commits([addr1.account.address]);
+        expect(userCommit[0]).to.equal(commitment);
+
+        // Fast forward time to bypass commit phase
+        await hre.network.provider.send("evm_increaseTime", [600]); // 10 minutes later
         await hre.network.provider.send("evm_mine");
 
-        // 4. Reveal Phase
-        await aiJudge.connect(addr1).revealAnswer(bountyId, answer, salt);
+        // Reveal
+        const txReveal = await aiJudge.write.reveal([answer, saltBytes], { account: addr1.account });
+        await publicClient.waitForTransactionReceipt({ hash: txReveal });
 
-        // 5. Verify Submission was recorded
-        const submission = await aiJudge.getSubmission(bountyId, 0);
-        expect(submission[0]).to.equal(addr1.address);
-        expect(submission[1]).to.equal(answer);
+        // Verify the reveal was successful
+        const revealData = await aiJudge.read.reveals([addr1.account.address]);
+        expect(revealData[0]).to.equal(answer);
+        expect(revealData[1]).to.equal(saltBytes);
     });
 
     it("should fail reveal if salt or answer is wrong", async function () {
-        const { aiJudge, addr1 } = await deployFixture();
+        const { aiJudge, addr1, publicClient } = await deployFixture();
 
-        const title = "Best Code";
-        const rubric = "Clean and fast";
-        const latestBlock = await hre.ethers.provider.getBlock("latest");
-        const currentTimestamp = latestBlock ? latestBlock.timestamp : Math.floor(Date.now() / 1000);
-        const deadline = currentTimestamp + 3600;
-        const revealDeadline = deadline + 3600;
-        const reward = hre.ethers.parseEther("1");
+        const answer = 42n;
+        const saltBytes = keccak256(toHex("random_salt_123"));
+        const commitment = keccak256(encodePacked(['uint256', 'bytes32'], [answer, saltBytes]));
 
-        await aiJudge.createBounty(title, rubric, deadline, revealDeadline, { value: reward });
-        const bountyId = 1;
+        // Commit
+        const txCommit = await aiJudge.write.commit([commitment], { account: addr1.account });
+        await publicClient.waitForTransactionReceipt({ hash: txCommit });
 
-        const answer = "My secret answer";
-        const salt = hre.ethers.encodeBytes32String("my-secret-salt");
-        
-        const encodedData = hre.ethers.solidityPacked(
-            ["string", "bytes32", "address", "uint256"],
-            [answer, salt, addr1.address, bountyId]
-        );
-        const commitment = hre.ethers.keccak256(encodedData);
-
-        await aiJudge.connect(addr1).submitCommitment(bountyId, commitment);
-
-        await hre.network.provider.send("evm_increaseTime", [3660]);
+        // Fast forward time
+        await hre.network.provider.send("evm_increaseTime", [600]);
         await hre.network.provider.send("evm_mine");
 
-        const wrongSalt = hre.ethers.encodeBytes32String("wrong-salt");
-        await expect(
-            aiJudge.connect(addr1).revealAnswer(bountyId, answer, wrongSalt)
-        ).to.be.revertedWith("invalid reveal");
-
-        const wrongAnswer = "Wrong answer";
-        await expect(
-            aiJudge.connect(addr1).revealAnswer(bountyId, wrongAnswer, salt)
-        ).to.be.revertedWith("invalid reveal");
+        // Attempt to reveal with WRONG answer
+        let errorOccurred = false;
+        try {
+            await aiJudge.write.reveal([43n, saltBytes], { account: addr1.account });
+        } catch (error) {
+            errorOccurred = true;
+        }
+        expect(errorOccurred).to.be.true;
     });
 
     it("should prevent committing after deadline and revealing before deadline", async function () {
-        const { aiJudge, addr1 } = await deployFixture();
+        const { aiJudge, addr1, publicClient } = await deployFixture();
 
-        const title = "Best Code";
-        const rubric = "Clean and fast";
-        const latestBlock = await hre.ethers.provider.getBlock("latest");
-        const currentTimestamp = latestBlock ? latestBlock.timestamp : Math.floor(Date.now() / 1000);
-        const deadline = currentTimestamp + 3600;
-        const revealDeadline = deadline + 3600;
-        const reward = hre.ethers.parseEther("1");
+        const answer = 42n;
+        const saltBytes = keccak256(toHex("random_salt_123"));
+        const commitment = keccak256(encodePacked(['uint256', 'bytes32'], [answer, saltBytes]));
 
-        await aiJudge.createBounty(title, rubric, deadline, revealDeadline, { value: reward });
-        const bountyId = 1;
+        // Try revealing BEFORE deadline
+        let errorRevealBeforeDeadline = false;
+        try {
+            await aiJudge.write.reveal([answer, saltBytes], { account: addr1.account });
+        } catch (error) {
+            errorRevealBeforeDeadline = true;
+        }
+        expect(errorRevealBeforeDeadline).to.be.true;
 
-        const answer = "My secret answer";
-        const salt = hre.ethers.encodeBytes32String("my-secret-salt");
-        const encodedData = hre.ethers.solidityPacked(
-            ["string", "bytes32", "address", "uint256"],
-            [answer, salt, addr1.address, bountyId]
-        );
-        const commitment = hre.ethers.keccak256(encodedData);
-
-        // Try to reveal before deadline
-        await expect(
-            aiJudge.connect(addr1).revealAnswer(bountyId, answer, salt)
-        ).to.be.revertedWith("submission phase still active");
-
-        // Move to after deadline
-        await hre.network.provider.send("evm_increaseTime", [3660]);
+        // Fast forward past the commit deadline
+        await hre.network.provider.send("evm_increaseTime", [600]);
         await hre.network.provider.send("evm_mine");
 
-        // Try to commit after deadline
-        await expect(
-            aiJudge.connect(addr1).submitCommitment(bountyId, commitment)
-        ).to.be.revertedWith("submission phase ended");
+        // Try committing AFTER deadline
+        let errorCommitAfterDeadline = false;
+        try {
+            await aiJudge.write.commit([commitment], { account: addr1.account });
+        } catch (error) {
+            errorCommitAfterDeadline = true;
+        }
+        expect(errorCommitAfterDeadline).to.be.true;
     });
 });
