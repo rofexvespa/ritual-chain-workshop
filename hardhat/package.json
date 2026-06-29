@@ -10,5 +10,9 @@
     "hardhat": "^3.9.0",
     "typescript": "~6.0.3",
     "viem": "^2.53.1"
+  },
+  "dependencies": {
+    "@nomicfoundation/hardhat-ethers": "^4.0.13",
+    "ethers": "^6.17.0"
   }
 }

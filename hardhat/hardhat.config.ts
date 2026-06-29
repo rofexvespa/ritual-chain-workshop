@@ -37,4 +37,19 @@ export default defineConfig({
       accounts: process.env.DEPLOYER_PRIVATE_KEY ? [process.env.DEPLOYER_PRIVATE_KEY] : [],
     },
   },
+  etherscan: {
+    apiKey: {
+      ritual: "empty"
+    },
+    customChains: [
+      {
+        network: "ritual",
+        chainId: 1979,
+        urls: {
+          apiURL: "https://explorer.ritualfoundation.org/api",
+          browserURL: "https://explorer.ritualfoundation.org"
+        }
+      }
+    ]
+  }
 });
