@@ -1,7 +1,8 @@
-import "@nomicfoundation/hardhat-toolbox-viem";
+import toolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
 import { configVariable, defineConfig } from "hardhat/config";
 
 export default defineConfig({
+  plugins: [toolboxViem],
   solidity: {
     profiles: {
       default: {
@@ -19,6 +20,12 @@ export default defineConfig({
     },
   },
   networks: {
+    hardhat: {
+      type: "edr-simulated",
+      forking: {
+        url: "https://rpc.ritualfoundation.org"
+      }
+    },
     hardhatMainnet: {
       type: "edr-simulated",
       chainType: "l1",
